@@ -1,0 +1,1 @@
+time g++ -o main main.cpp -lusb-1.0 -I./include ; ./main
