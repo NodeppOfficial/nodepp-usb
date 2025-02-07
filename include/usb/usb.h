@@ -19,33 +19,96 @@
 
 /*────────────────────────────────────────────────────────────────────────────*/
 
+namespace nodepp {
+enum usb_request_type {
+	REQUEST_STANDARD = (0x00 << 5),
+	REQUEST_CLASS    = (0x01 << 5),
+	REQUEST_VENDOR   = (0x02 << 5),
+	REQUEST_RESERVED = (0x03 << 5)
+};
+
+enum usb_request_recipient {
+	RECIPIENT_DEVICE    = 0x00,
+	RECIPIENT_INTERFACE = 0x01,
+	RECIPIENT_ENDPOINT  = 0x02,
+	RECIPIENT_OTHER     = 0x03
+};
+
+enum usb_transfer_type {
+	TRANSFER_CONTROL     = 0,
+	TRANSFER_ISOCHRONOUS = 1,
+	TRANSFER_BULK        = 2,
+	TRANSFER_INTERRUPT   = 3
+};
+
+enum usb_endpoint_direction {
+	ENDPOINT_IN  = 0x80,
+	ENDPOINT_OUT = 0x00
+};
+}
+
+/*────────────────────────────────────────────────────────────────────────────*/
+
 namespace nodepp { class usb_device_t {
 protected:
 
     struct NODE {
         libusb_device_handle* fd = nullptr;
-        libusb_device  *ctx      = nullptr;
-        libusb_context *idx      = nullptr;
+        libusb_device       *ctx = nullptr;
+        libusb_context      *idx = nullptr;
         bool state = 0;
     };  ptr_t<NODE> obj;
+
+    /*.........................................................................*/
 
     bool is_blocked( int error ) const noexcept {
         return error == LIBUSB_ERROR_TIMEOUT | LIBUSB_ERROR_BUSY;
     }
 
+    /*.........................................................................*/
+
+    int control_transfer( uint8 type, uint8 id, uint16 value, uint16 index, uchar* buffer, ulong size ) const noexcept {
+        if( obj->state==0 ){ return -1; } int len = 0;
+        if( is_blocked( len=libusb_control_transfer ( 
+             obj->fd, type, id, value, index, buffer, size, 0 
+       ))){ return -2; } return len < 0 ? -1 : len;
+    }
+
+    int bulk_transfer( uchar* buffer, ulong size, ptr_t<uint8> ctx ) const noexcept {
+        if( obj->state==0 || ctx == nullptr ){ return -1; } int len = 0;
+
+        if( libusb_claim_interface( obj->fd, ctx[3] )<0 ) { goto DONE; }
+        if( is_blocked( libusb_interrupt_transfer ( 
+             obj->fd, ctx[0], buffer, size, &len, 0 
+       ))){ libusb_release_interface( obj->fd, ctx[3] ); return -2; }
+
+        DONE:; libusb_release_interface( obj->fd, ctx[3] ); return len;
+    }
+
+    int interrupt_transfer( uchar* buffer, ulong size, ptr_t<uint8> ctx ) const noexcept {
+        if( obj->state==0 || ctx == nullptr ){ return -1; } int len = 0;
+
+        if( libusb_claim_interface( obj->fd, ctx[3] )<0 ) { goto DONE; }
+        if( is_blocked( libusb_interrupt_transfer ( 
+             obj->fd, ctx[0], buffer, size, &len, 0 
+       ))){ libusb_release_interface( obj->fd, ctx[3] ); return -2; }
+
+        DONE:; libusb_release_interface( obj->fd, ctx[3] ); return len;
+    }
+
 public:
 
-    usb_device_t ( uint16_t vendorID, uint16_t productID ) : obj( new NODE() ) { libusb_init( &obj->idx );
+    usb_device_t ( uint16 vendorID, uint16 productID ) : obj( new NODE() ) { libusb_init( &obj->idx );
         obj->fd = libusb_open_device_with_vid_pid( obj->idx, vendorID, productID );
         if( obj->fd == nullptr ){ 
-            process::error( "can't initialize device" ); return; 
-        }   obj->state = 1;
+            process::error( "can't initialize device" ); 
+        return; } obj->state = 1;
     }
 
     usb_device_t ( libusb_device* ctx ) : obj( new NODE() ) {
         if( ctx == nullptr ){ return; } if( libusb_open( ctx, &obj->fd )<0 ){ 
-            process::error( "can't initialize device" ); return; 
-        }   obj->state = 1; obj->ctx = ctx;
+            process::error( "can't initialize device" ); 
+        return; } obj->state = 1; obj->ctx = ctx;
     }
 
     /*.........................................................................*/
@@ -55,51 +118,115 @@ public:
 
     /*.........................................................................*/
 
+    ptr_t<uint8> get_endpoint( uint8 _type_, uint8 _mode_ ) const noexcept {
+        libusb_config_descriptor *config_descriptor = NULL;
+
+        if( libusb_get_active_config_descriptor( obj->ctx, &config_descriptor )<0 ) 
+          { goto DONE; }
+
+        for( int j=0; j<config_descriptor->bNumInterfaces; j++ ) {
+             auto interface_descriptor = &config_descriptor->interface[j];
+
+        for( int k=0; k<interface_descriptor->num_altsetting; k++ ) {
+             auto alt_descriptor = &interface_descriptor->altsetting[k];
+
+        for( int l=0; l<alt_descriptor->bNumEndpoints; l++ ) {
+             auto endpoint_descriptor = &alt_descriptor->endpoint[l];
+
+            if ( endpoint_descriptor->bEndpointAddress & _type_ &&
+                 endpoint_descriptor->bmAttributes     & _mode_
+            )  { continue; }
+
+            uint8 endpoint_address   = endpoint_descriptor->bEndpointAddress;
+            uint8 endpoint_direction = endpoint_descriptor->bEndpointAddress & _type_;
+            uint8 endpoint_type      = endpoint_descriptor->bmAttributes     & _mode_;
+
+            return ptr_t<uint8>({ 
+                endpoint_address  ,
+                endpoint_type     ,
+                endpoint_direction, (uint8)j
+            });
+
+        }}}
+
+        DONE:; libusb_free_config_descriptor( config_descriptor ); return nullptr;
+    }
+
+    /*.........................................................................*/
+
     libusb_device_descriptor get_descriptor() const noexcept {
         libusb_device_descriptor idx;
         libusb_get_device_descriptor( obj->ctx, &idx ); return idx;
     }
 
+    /*.........................................................................*/
+
+    uint8 get_vendor_id()  const noexcept { return get_descriptor().idVendor; }
+    uint8 get_product_id() const noexcept { return get_descriptor().idProduct; }
+    uint8 get_serial_id()  const noexcept { return get_descriptor().iSerialNumber; } 
+
+    /*.........................................................................*/
+
     string_t get_product() const noexcept { 
-        uchar buff[256]; memset( buff, 0, sizeof(buff) ); auto idx = get_descriptor();
-        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iProduct, buff, sizeof(buff) );
-        if ( len != LIBUSB_SUCCESS ) { return nullptr; } return string_t( (char*) buff, len );
+        uchar buff[256]; memset( buff, 0, 256 ); auto idx = get_descriptor();
+        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iProduct, buff, 256 );
+        if ( len<= 0 ) { return nullptr; } return string_t( (char*) buff, len );
     }
 
     string_t get_manufacturer() const noexcept { 
-        uchar buff[256]; memset( buff, 0, sizeof(buff) ); auto idx = get_descriptor();
-        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iManufacturer, buff, sizeof(buff) );
-        if ( len != LIBUSB_SUCCESS ) { return nullptr; } return string_t( (char*) buff, len );
+        uchar buff[256]; memset( buff, 0, 256 ); auto idx = get_descriptor();
+        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iManufacturer, buff, 256 );
+        if ( len<= 0 ) { return nullptr; } return string_t( (char*) buff, len );
     }
 
-    string_t get_serial_id() const noexcept { 
-        uchar buff[256]; memset( buff, 0, sizeof(buff) ); auto idx = get_descriptor();
-        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iSerialNumber, buff, sizeof(buff) );
-        if ( len != LIBUSB_SUCCESS ) { return nullptr; } return string_t( (char*) buff, len );
+    string_t get_serial() const noexcept { 
+        uchar buff[256]; memset( buff, 0, 256 ); auto idx = get_descriptor();
+        auto len = libusb_get_string_descriptor_ascii( obj->fd, idx.iSerialNumber, buff, 256 );
+        if ( len<= 0 ) { return nullptr; } return string_t( (char*) buff, len );
     }
 
     /*.........................................................................*/
 
-    int _interrupt_read() const noexcept { return 0; }
+    int control_read( uint8 id, uint8 _type_, uint16 value, uint16 index, ptr_t<uchar> data ) const noexcept { 
+        auto ctx = get_endpoint( TRANSFER_CONTROL, ENDPOINT_IN );
+        return control_transfer( _type_|ENDPOINT_IN, id, value, index, data.get(), data.size() );
+    }
 
-    int _control_read() const noexcept { return 0; }
-
-    int _bulk_read() const noexcept { return 0; }
+    int control_write( uint8 id, uint8 _type_, uint16 value, uint16 index, ptr_t<uchar> data ) const noexcept { 
+        auto ctx = get_endpoint( TRANSFER_CONTROL, ENDPOINT_OUT );
+        return control_transfer( _type_|ENDPOINT_OUT, id, value, index, data.get(), data.size() );
+    }
 
     /*.........................................................................*/
 
-    int _interrupt_write() const noexcept { return 0; }
+    int interrupt_read( ptr_t<uchar> data ) const noexcept { 
+        auto ctx = get_endpoint( TRANSFER_INTERRUPT, ENDPOINT_IN );
+        return interrupt_transfer( data.get(), data.size(), ctx );
+    }
 
-    int _control_write() const noexcept { return 0; }
+    int interrupt_write( ptr_t<uchar> data ) const noexcept {
+        auto ctx = get_endpoint( TRANSFER_INTERRUPT, ENDPOINT_OUT );
+        return interrupt_transfer( data.get(), data.size(), ctx );
+    }
 
-    int _bulk_write() const noexcept { return 0; }
+    /*.........................................................................*/
+
+    int bulk_read( ptr_t<uchar> data ) const noexcept {
+        auto ctx = get_endpoint( TRANSFER_BULK, ENDPOINT_IN );
+        return bulk_transfer( data.get(), data.size(), ctx );
+    }
+
+    int bulk_write( ptr_t<uchar> data ) const noexcept {
+        auto ctx = get_endpoint( TRANSFER_BULK, ENDPOINT_OUT );
+        return bulk_transfer( data.get(), data.size(), ctx );
+    }
 
     /*.........................................................................*/
 
     void free() const noexcept {
-        if( obj->state == 0 ){ return; } obj->state = 0;
-        if( obj->idx != nullptr ) { libusb_exit( obj->idx ); }
-        if( obj->fd  != nullptr ) { libusb_close( obj->fd ); } 
+        if( obj->state == 0 )    { return; } obj->state =0;
+        if( obj->idx != nullptr ){ libusb_exit( obj->idx ); }
+        if( obj->fd  != nullptr ){ libusb_close( obj->fd ); } 
     }
 
 };}
@@ -111,7 +238,7 @@ protected:
 
     struct NODE {
         libusb_context* ctx  = nullptr;
-        libusb_device **list = nullptr;
+        libusb_device** list = nullptr;
         bool state = 0;
     };  ptr_t<NODE> obj;
 
@@ -126,7 +253,7 @@ public:
 
     usb_t () : obj( new NODE() ) { if( libusb_init( &obj->ctx ) < 0 ) {
         process::error("Can't initialize USB"); return;
-    } obj->state = 1; }
+    }   obj->state = 1; }
 
     /*.........................................................................*/
 
@@ -134,15 +261,16 @@ public:
         array_t<usb_device_t> res = nullptr;
         for( auto x=0; x<count(); x++ ){ try {
              res.push( usb_device_t( obj->list[x] ) );
-        } catch(...){ } } return res;
+        } catch(...){ } } if( obj->list !=nullptr ) { 
+            libusb_free_device_list( obj->list, 1 ); 
+        }   return res;
     }
 
     /*.........................................................................*/
 
     void free() const noexcept { 
         if( obj->state == 0 ){ return; } obj->state = 0;
-        if( obj->ctx  != nullptr ) { libusb_exit( obj->ctx ); }
-        if( obj->list != nullptr ) { libusb_free_device_list( obj->list, 1 ); }
+        if( obj->ctx != nullptr ) { libusb_exit( obj->ctx ); }
     }
 
 };}
