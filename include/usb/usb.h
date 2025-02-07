@@ -61,9 +61,10 @@ protected:
 
     /*.........................................................................*/
 
-    bool is_blocked( int error ) const noexcept {
-        return error == LIBUSB_ERROR_TIMEOUT | LIBUSB_ERROR_BUSY;
-    }
+    bool is_blocked( int c ) const noexcept { if( c < 0 ){ return (
+        c == LIBUSB_ERROR_TIMEOUT || 
+        c == LIBUSB_ERROR_BUSY
+    );} return 0; }
 
     /*.........................................................................*/
 

@@ -19,12 +19,15 @@ void onMain() {
 
     usb_t ctx; auto devices = ctx.get_devices();
     for( auto x: devices ){
-        console::log( "->", x.get_endpoint( 
-            ENDPOINT_IN, TRANSFER_CONTROL 
-        )); 
+
+        ptr_t<uchar> bff ( 64, '\0' ); int len=0;
+    
+        while( (len=x.control_read( 0x21, 0x09, 0x0300, 0x0000, bff ))==-2 )
+             { process::next(); }
 
         console::log( "->", x.get_manufacturer() );
         console::log( "->", x.get_product() );
+        console::log( "->", len );
 
         console::log("---");
     }
