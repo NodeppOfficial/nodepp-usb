@@ -102,13 +102,13 @@ public:
     usb_device_t ( uint16 vendorID, uint16 productID ) : obj( new NODE() ) { libusb_init( &obj->idx );
         obj->fd = libusb_open_device_with_vid_pid( obj->idx, vendorID, productID );
         if( obj->fd == nullptr ){ 
-            process::error( "can't initialize device" ); 
+            throw except_t( "can't initialize device" ); 
         return; } obj->state = 1;
     }
 
     usb_device_t ( libusb_device* ctx ) : obj( new NODE() ) {
         if( ctx == nullptr ){ return; } if( libusb_open( ctx, &obj->fd )<0 ){ 
-            process::error( "can't initialize device" ); 
+            throw except_t( "can't initialize device" ); 
         return; } obj->state = 1; obj->ctx = ctx;
     }
 
@@ -253,7 +253,7 @@ public:
    ~usb_t () noexcept { if( obj.count()>1 ){ return; } free(); }
 
     usb_t () : obj( new NODE() ) { if( libusb_init( &obj->ctx ) < 0 ) {
-        process::error("Can't initialize USB"); return;
+        throw except_t("Can't initialize USB"); return;
     }   obj->state = 1; }
 
     /*.........................................................................*/
